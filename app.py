@@ -1,5 +1,7 @@
 from random import choice
-from flask import Flask, request
+from typing import Any
+
+from flask import Flask, request, jsonify, abort
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -55,17 +57,19 @@ def quotes_all_quotes():
 def get_quote_by_id(quote_id):
     for quote in quotes:
         if quote['id'] == quote_id:
-            return quote
-        return f"Quotes with id={quote_id} not found", 404
+            return dict(quote)
+
+    abort(404, f"Quotes with id={quote_id} not found")
+    # return f"Quotes with id={quote_id} not found", 404 # С тем же результатом.
 
 
 @app.route("/quotes/random", methods=["GET"])
 def random_quote():
-    return choice(quotes)
+    return jsonify(choice(quotes))
 
 
 @app.get("/quotes/count")
-def goutes_count():
+def qoutes_count():
     return {
         "count": len(quotes)
     }
@@ -81,21 +85,27 @@ def create_quote():
     return new_quote, 201
 
 
-@app.route("/quotes/<id>", methods=["PUT"])
+# noinspection All
+@app.route("/quotes/<int:id>", methods=["PUT"])
 def edit_quote(id):
     new_data = request.json
-    quote = get_quote_by_id(id)
-    if quote['text'] == new_data['text']:
-        quote['text'] = new_data['text']
+    new_quote = get_quote_by_id(id)
+    old_quote = new_quote.copy()
+    if new_data['text'] != new_quote['text']:
+        new_quote['text'] = new_data['text']
+        old_indx = quotes.index(old_quote)
+        quotes.pop(old_indx)
+        quotes.append(new_quote)
         return "Successfully replaced.", 200
 
     return "Error", 404
 
 
-@app.route('/quotes/<id>', methods=["DELETE"])
+@app.route('/quotes/<int:id>', methods=["DELETE"]) # Берет int из URL.
 def delete(id):
     quote = get_quote_by_id(id)
-    quotes.remove(quote)
+    indx = quotes.index(quote)
+    quotes.pop(indx)
     return f"The {quote} is deleted."
 
 
