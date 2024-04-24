@@ -1,112 +1,118 @@
-from random import choice
-from typing import Any
+import sqlite3
+from flask import Flask, request, jsonify, abort, g
+from pathlib import Path
+from werkzeug.exceptions import HTTPException
+# from flask_sqlalchemy import SQLAlchemy
 
-from flask import Flask, request, jsonify, abort
+BASE_DIR = Path(__name__).parent
+DATABASE = BASE_DIR / 'test.db'
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
 
-about_me = {
-    "name": "Габриэль",
-    "surname": "Бушар",
-    "email": "gabouchard2002@gmail.com"
-}
 
-quotes = [
-    {
-        "id": 3,
-        "author": "Rick Cook",
-        "text": "Программирование сегодня — это гонка разработчиков программ, стремящихся писать программы с большей и лучшей идиотоустойчивостью, и вселенной, которая пытается создать больше отборных идиотов. Пока вселенная побеждает."
-    },
-    {
-        "id": 5,
-        "author": "Waldi Ravens",
-        "text": "Программирование на С похоже на быстрые танцы на только что отполированном полу людей с острыми бритвами в руках."
-    },
-    {
-        "id": 6,
-        "author": "Mosher’s Law of Software Engineering",
-        "text": "Не волнуйтесь, если что-то не работает. Если бы всё работало, вас бы уволили."
-    },
-    {
-        "id": 8,
-        "author": "Yoggi Berra",
-        "text": "В теории, теория и практика неразделимы. На практике это не так."
-    },
-
-]
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+        return db
 
 
-@app.route("/")
-def hello_world():
-    return "Hello, world!"
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
 
 
-@app.route("/about")
-def about():
-    return about_me
+@app.errorhandler(HTTPException)
+def handle_exception(e):
+    return jsonify({"message": e.description}), e
 
 
-# Сериализация list -> str. Под капотом преобразует в json строку.
 @app.route("/quotes")
-def quotes_all_quotes():
-    return quotes
+def get_all_quotes():
+    connection = get_db()
+    cursor = connection.cursor()
+    select_quotes = " SELECT * FROM quotes "
+    cursor.execute(select_quotes)
+    quotes_db = cursor.fetchall()
+    # Правильная распаковка.
+    keys = ['id', 'author', 'text']
+    quotes = []
+    for quote_db in quotes_db:
+        quote_db = dict(zip(keys, quote_db))
+        quotes.append(quote_db)
+    cursor.close()
+    connection.close()
+    return jsonify(quotes), 200
 
 
 @app.route("/quotes/<int:quote_id>")
 def get_quote_by_id(quote_id):
-    for quote in quotes:
-        if quote['id'] == quote_id:
-            return dict(quote)
+    connection = get_db()
+    cursor = connection.cursor()
+    get_quote = f""" SELECT * FROM quotes WHERE id={quote_id} """
+    cursor.execute(get_quote)
+    quote_db = cursor.fetchone()
+    keys = ['id', 'author', 'text']
+    if quote_db is None:
+        abort(404, f"The quote with id={quote_id} is not found.")
+    quote = dict(zip(keys, quote_db))
+    return jsonify(quote), 200
 
-    abort(404, f"Quotes with id={quote_id} not found")
-    # return f"Quotes with id={quote_id} not found", 404 # С тем же результатом.
 
 
-@app.route("/quotes/random", methods=["GET"])
-def random_quote():
-    return jsonify(choice(quotes))
-
-
-@app.get("/quotes/count")
-def qoutes_count():
-    return {
-        "count": len(quotes)
-    }
+# @app.route("/quotes/filter")
+# def get_quotes_by_filter():
+#     args = request.args
+#     res = []
+#     for quote in quotes:
+#         if all(args.get(key, type=type(quote[key])) == quote[key] for key in args):
+#             res.append(quote)
+#
+#     return jsonify(res)
 
 
 @app.route("/quotes", methods=["POST"])
-def create_quote():
-    new_quote = request.json
-    last_quote = quotes[-1]
-    new_id = last_quote["id"] + 1
-    new_quote['id'] = new_id
-    quotes.append(new_quote)
-    return new_quote, 201
+def create_quotes():
+    new_data = request.json
+    connection = get_db()
+    cursor = connection.cursor()
+    create_quote = """ INSERT INTO quotes  (author, text) VALUES (?, ?) """
+    cursor.execute(create_quote, (new_data['author'], new_data['text']))
+    connection.commit()
+    new_id = cursor.lastrowid
+    new_data['id'] = new_id
+    return jsonify(new_data), 201
 
 
 # noinspection All
 @app.route("/quotes/<int:id>", methods=["PUT"])
-def edit_quote(id):
+def edit_quote(quote_id):
     new_data = request.json
-    new_quote = get_quote_by_id(id)
-    old_quote = new_quote.copy()
-    if new_data['text'] != new_quote['text']:
-        new_quote['text'] = new_data['text']
-        old_indx = quotes.index(old_quote)
-        quotes.pop(old_indx)
-        quotes.append(new_quote)
-        return "Successfully replaced.", 200
+    connection = get_db()
+    cursor = connection.cursor()
+    update_quote = """ UPDATE quotes SET author=?, text=?, WHERE id=? """
+    cursor.execute(
+        update_quote, (new_data['author'], new_data['text'], quote_id))
+    connection.commit()
+    if cursor.rowcount > 0:
+        new_data['id'] = quote_id
+        return jsonify(new_data), 200
+    abort(404, f"Quote with {quote_id} is not found")
 
-    return "Error", 404
 
-
-@app.route('/quotes/<int:id>', methods=["DELETE"]) # Берет int из URL.
-def delete(id):
-    quote = get_quote_by_id(id)
-    indx = quotes.index(quote)
-    quotes.pop(indx)
-    return f"The {quote} is deleted."
+@app.route('/quotes/<int:quote_id>', methods=["DELETE"])  # Берет int из URL.
+def delete(quote_id):
+    connection = get_db()
+    cursor = connection.cursor()
+    delete_quote = """ DELETE FROM quotes WHERE id=? """
+    cursor.execute(delete_quote, (quote_id))
+    connection.commit()
+    if cursor.rowcount > 0:
+        return jsonify({'message': f"The quote with id= {quote_id} has been deleted."})
+    abort(404, f"The quotes with id= {quote_id} is not found.")
 
 
 if __name__ == "__main__":
